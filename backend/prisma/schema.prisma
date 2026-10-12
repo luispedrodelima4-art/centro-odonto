@@ -1,0 +1,245 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+// ------------------------------------------------------
+// CLINIC PROFILE & IDENTITY & ACCESS MANAGEMENT (RBAC)
+// ------------------------------------------------------
+
+model ClinicInfo {
+  id          String   @id @default(uuid())
+  name        String
+  tradeName   String?  @map("trade_name")
+  taxId       String   @unique // CNPJ
+  email       String?
+  phoneNumber String?  @map("phone_number")
+  address     String?
+  logoUrl     String?  @map("logo_url")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("clinic_info")
+}
+
+model ProcedureCatalog {
+  id           String   @id @default(uuid())
+  name         String
+  category     String   @default("CLINICAL")
+  priceInCents Int      @map("price_in_cents")
+  description  String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("procedure_catalog")
+}
+
+enum UserRole {
+  ADMIN
+  DENTIST
+  RECEPTIONIST
+  FINANCIAL
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole
+  councilId    String?  @map("council_id") // CRO for dentists
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  progressNotes       ClinicalProgressNote[]
+  appointmentsDentist Appointment[]          @relation("DentistAppointments")
+
+  @@map("users")
+}
+
+// ------------------------------------------------------
+// CLINICAL RECORD & EHR (PEP)
+// ------------------------------------------------------
+
+model Patient {
+  id          String   @id @default(uuid())
+  fullName    String   @map("full_name")
+  documentCpf String   @unique @map("document_cpf")
+  birthDate   DateTime @map("birth_date")
+  phoneNumber String   @map("phone_number")
+  email       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  patientRecord PatientRecord?
+  appointments  Appointment[]
+  wallet        PatientWallet?
+
+  @@map("patients")
+}
+
+model PatientRecord {
+  id            String   @id @default(uuid())
+  patientId     String   @unique @map("patient_id")
+  medicalAlerts Json     @default("[]") @map("medical_alerts")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  patient       Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  odontogram    Odontogram?
+  progressNotes ClinicalProgressNote[]
+
+  @@map("patient_records")
+}
+
+enum DentitionType {
+  PERMANENT
+  PRIMARY
+  MIXED
+}
+
+model Odontogram {
+  id              String        @id @default(uuid())
+  patientRecordId String        @unique @map("patient_record_id")
+  dentitionType   DentitionType @default(PERMANENT) @map("dentition_type")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  patientRecord PatientRecord @relation(fields: [patientRecordId], references: [id], onDelete: Cascade)
+  teeth         Tooth[]
+
+  @@map("odontograms")
+}
+
+model Tooth {
+  id           String   @id @default(uuid())
+  odontogramId String   @map("odontogram_id")
+  toothNumber  Int      @map("tooth_number") // FDI format: 11-48, 51-85
+  condition    String   @default("SOUND") // SOUND, CARIOUS, RESTORED, MISSING, etc.
+  notes        String?
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  odontogram Odontogram        @relation(fields: [odontogramId], references: [id], onDelete: Cascade)
+  procedures DentalProcedure[]
+
+  @@ unique([odontogramId, toothNumber])
+  @@map("teeth")
+}
+
+enum ProcedureStatus {
+  PROPOSED
+  APPROVED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model DentalProcedure {
+  id            String          @id @default(uuid())
+  toothId       String          @map("tooth_id")
+  procedureCode String          @map("procedure_code")
+  name          String
+  surfaces      String[]        @default([]) // ["M", "O", "D"]
+  status        ProcedureStatus @default(PROPOSED)
+  priceInCents  Int             @map("price_in_cents")
+  performerId   String?         @map("performer_id")
+  notes         String?
+  completedAt   DateTime?       @map("completed_at")
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  tooth Tooth @relation(fields: [toothId], references: [id], onDelete: Cascade)
+
+  @@map("dental_procedures")
+}
+
+model ClinicalProgressNote {
+  id                   String    @id @default(uuid())
+  patientRecordId      String    @map("patient_record_id")
+  professionalId       String    @map("professional_id")
+  text                 String
+  endodonticData       Json?     @map("endodontic_data")
+  isSigned             Boolean   @default(false) @map("is_signed")
+  signedAt             DateTime? @map("signed_at")
+  digitalSignatureHash String?   @map("digital_signature_hash")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  patientRecord PatientRecord @relation(fields: [patientRecordId], references: [id], onDelete: Cascade)
+  professional  User          @relation(fields: [professionalId], references: [id])
+
+  @@map("clinical_progress_notes")
+}
+
+// ------------------------------------------------------
+// SCHEDULING CONTEXT
+// ------------------------------------------------------
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  IN_RECEPTION
+  IN_CONSULTATION
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+}
+
+model Appointment {
+  id               String            @id @default(uuid())
+  patientId        String            @map("patient_id")
+  dentistId        String            @map("dentist_id")
+  startTime        DateTime          @map("start_time")
+  endTime          DateTime          @map("end_time")
+  status           AppointmentStatus @default(SCHEDULED)
+  googleCalendarId String?           @map("google_calendar_id")
+  notes            String?
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  dentist User    @relation("DentistAppointments", fields: [dentistId], references: [id])
+
+  @@index([startTime])
+  @@map("appointments")
+}
+
+// ------------------------------------------------------
+// FINANCIAL & WALLET CONTEXT
+// ------------------------------------------------------
+
+model PatientWallet {
+  id             String   @id @default(uuid())
+  patientId      String   @unique @map("patient_id")
+  balanceInCents Int      @default(0) @map("balance_in_cents")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  patient      Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+
+  @@map("patient_wallets")
+}
+
+enum TransactionType {
+  CREDIT_TOPUP
+  PROCEDURE_DEBIT
+  REFUND
+}
+
+model WalletTransaction {
+  id           String          @id @default(uuid())
+  walletId     String          @map("wallet_id")
+  amountCents  Int             @map("amount_cents")
+  type         TransactionType
+  description  String
+  pixPaymentId String?         @map("pix_payment_id")
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  wallet PatientWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@map("wallet_transactions")
+}
